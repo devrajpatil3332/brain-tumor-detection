@@ -20,11 +20,15 @@ st.subheader("MRI Image Classification using CNN")
 st.write("### College Project")
 
 st.markdown("""
-**Developed By:** YOUR NAME
+**Developed By:**
+- Devraj Patil
+- Pradnya Kantekure
+- Aditya Patil
 
-**Department:** YOUR DEPARTMENT
+**Department:** E&TC
 
-**College:** YOUR COLLEGE NAME
+**College:** SKNCOE
+""")
 
 **Project Guide:** GUIDE NAME
 """)

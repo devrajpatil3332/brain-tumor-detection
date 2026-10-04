@@ -67,7 +67,7 @@ if uploaded_file is not None:
     # Preprocessing
     image_resized = image.resize((128, 128))
 
-    image_array = np.array(image_resized) / 255.0
+    image_array = np.array(image_resized)
 
     image_array = np.expand_dims(
         image_array,

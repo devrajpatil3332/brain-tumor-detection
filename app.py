@@ -5,7 +5,7 @@ import numpy as np
 
 # Load trained CNN model
 model = tf.keras.models.load_model(
-    r"D:\Brain Tumor MRI Dataset\brain_tumor_cnn.keras"
+    r"D:\Brain Tumor MRI Dataset\brain_tumor_cnn.h5"
 )
 
 # Page settings

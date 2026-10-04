@@ -5,7 +5,6 @@ import numpy as np
 
 # Load trained CNN model
 model = tf.keras.models.load_model("brain_tumor_cnn.h5")
-)
 
 # Page settings
 st.set_page_config(
@@ -41,7 +40,9 @@ st.write(
     "Normal Brain (No Tumor) and Tumor Brain."
 )
 
-# Upload
+st.divider()
+
+# Upload MRI Image
 st.write("### 📤 Upload Brain MRI Image")
 
 uploaded_file = st.file_uploader(
@@ -57,7 +58,7 @@ if uploaded_file is not None:
     st.image(
         image,
         caption="Uploaded MRI Image",
-        use_container_width=True
+        width="stretch"
     )
 
     # Preprocessing
@@ -70,7 +71,7 @@ if uploaded_file is not None:
         axis=0
     )
 
-    # Prediction
+    # CNN Prediction
     prediction = model.predict(
         image_array,
         verbose=0

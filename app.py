@@ -30,8 +30,7 @@ st.markdown("""
 **College:** SKNCOE
 """)
 
-**Project Guide:** GUIDE NAME
-""")
+
 
 st.divider()
 

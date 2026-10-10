@@ -53,22 +53,36 @@ uploaded_file = st.file_uploader(
     type=["jpg", "jpeg", "png"]
 )
 
+
 # Prediction
 if uploaded_file is not None:
-
-    
-try:
-    image = Image.open(uploaded_file).convert("RGB")
-except Exception:
-    st.error("❌ Invalid image file. Please upload a valid image.")
-    st.stop()
-
+    try:
+        image = Image.open(uploaded_file).convert("RGB")
+    except Exception:
+        st.error("❌ Invalid image file. Please upload a valid image.")
+        st.stop()
 
     st.image(
         image,
         caption="Uploaded MRI Image",
         width="stretch"
     )
+
+    image_resized = image.resize((128, 128))
+    image_array = np.array(image_resized)
+    image_array = np.expand_dims(image_array, axis=0)
+
+    prediction = model.predict(image_array, verbose=0)[0][0]
+
+    st.divider()
+    st.write("### 🧠 Classification Result")
+
+    if prediction >= 0.5:
+        st.error("🔴 Tumor Brain")
+        st.write(f"Model Confidence: {prediction * 100:.2f}%")
+    else:
+        st.success("🟢 Normal Brain (No Tumor)")
+        st.write(f"Model Confidence: {(1 - prediction) * 100:.2f}%")
 
     # Preprocessing
     image_resized = image.resize((128, 128))

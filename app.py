@@ -56,7 +56,13 @@ uploaded_file = st.file_uploader(
 # Prediction
 if uploaded_file is not None:
 
+    
+try:
     image = Image.open(uploaded_file).convert("RGB")
+except Exception:
+    st.error("❌ Invalid image file. Please upload a valid image.")
+    st.stop()
+
 
     st.image(
         image,

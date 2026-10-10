@@ -4,7 +4,7 @@ from PIL import Image
 import numpy as np
 
 # Load trained CNN model
-model = tf.keras.models.load_model("brain_tumor_cnn.h5")
+model = tf.keras.models.load_model("brain_tumor_cnn.h5", compile=False)
 
 # Page settings
 st.set_page_config(

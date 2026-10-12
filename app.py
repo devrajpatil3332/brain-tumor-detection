@@ -92,14 +92,29 @@ if uploaded_file is not None:
     )[0]
 
     # Common everyday object labels
+    
     everyday_objects = {
-        "dog", "cat", "bird", "car", "truck", "trailer_truck",
-        "sports_car", "racer", "bus", "bicycle", "motorcycle",
-        "airplane", "boat", "person", "banana", "apple", "orange",
-        "flower", "guitar", "keyboard", "laptop", "desktop_computer",
+        # Animals
+        "dog", "cat", "bird", "horse", "cow", "sheep",
+        "goat", "pig", "rabbit", "hamster", "monkey",
+        "lion", "tiger", "bear", "elephant", "zebra",
+
+        # People and human activities
+        "person", "face", "groom", "bridegroom",
+        "soccer_player", "basketball_player", "swimmer",
+        "racer", "scuba_diver", "ballet_dancer",
+
+        # Vehicles
+        "car", "sports_car", "racer", "truck", "trailer_truck",
+        "bus", "bicycle", "motorcycle", "airplane", "boat",
+
+        # Everyday objects
+        "banana", "apple", "orange", "flower", "guitar",
+        "keyboard", "laptop", "desktop_computer",
         "cellular_telephone", "coffee_mug", "chair", "sofa",
-        "television", "remote_control", "pick", "gasmask"
+        "television", "remote_control", "gasmask"
     }
+
 
     # Basic heuristic to reject common objects
     obvious_object = any(

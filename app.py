@@ -98,10 +98,11 @@ if uploaded_file is not None:
         for label in labels
     )
 
-    if obvious_object:
-        st.error("❌ Invalid Image: Please upload a brain MRI image.")
-        st.stop()
-        st.write("Checker labels:", [(label[1], round(float(label[2]), 3)) for label in labels])
+    st.write("Checker labels:", [(label[1], round(float(label[2]), 3)) for label in labels])
+
+if obvious_object:
+    st.error("❌ Invalid Image: Please upload a brain MRI image.")
+    st.stop()
         
         
 

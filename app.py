@@ -55,17 +55,6 @@ uploaded_file = st.file_uploader(
 )
 
 
-# Prediction
-
-# Load a general zero-shot image classifier
-@st.cache_resource
-def load_image_checker():
-    from transformers import pipeline
-    return pipeline(
-        "zero-shot-image-classification",
-        model="openai/clip-vit-base-patch32",
-        device=-1
-    )
 
 # Prediction
 if uploaded_file is not None:
@@ -74,6 +63,24 @@ if uploaded_file is not None:
     except Exception:
         st.error("❌ Invalid image file. Please upload a valid image.")
         st.stop()
+
+    st.image(image, caption="Uploaded Image", width="stretch")
+
+    image_resized = image.resize((128, 128))
+    image_array = np.expand_dims(np.array(image_resized), axis=0)
+
+    prediction = model.predict(image_array, verbose=0)[0][0]
+
+    st.divider()
+    st.write("### 🧠 Classification Result")
+
+    if prediction >= 0.5:
+        st.error("🔴 Tumor Brain")
+        st.write(f"Model Confidence: {prediction * 100:.2f}%")
+    else:
+        st.success("🟢 Normal Brain (No Tumor)")
+        st.write(f"Model Confidence: {(1 - prediction) * 100:.2f}%")
+
 
     st.image(
         image,

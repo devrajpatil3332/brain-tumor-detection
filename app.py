@@ -90,6 +90,7 @@ if uploaded_file is not None:
         checker_prediction,
         top=5
     )[0]
+    top_label = labels[0][1]
 
     # Common everyday object labels
     

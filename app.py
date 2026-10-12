@@ -1,18 +1,34 @@
+
 import streamlit as st
 import tensorflow as tf
 from PIL import Image
 import numpy as np
 
-# Load trained CNN model
-st.write("Loading brain tumor model...")
-model = tf.keras.models.load_model("brain_tumor_cnn.h5", compile=False)
-
-# Page settings
+# Page settings — must be first Streamlit command
 st.set_page_config(
     page_title="Brain Tumor Detection",
     page_icon="🧠",
     layout="centered"
 )
+
+# Load trained CNN model
+@st.cache_resource
+def load_brain_model():
+    return tf.keras.models.load_model(
+        "brain_tumor_cnn.h5",
+        compile=False
+    )
+
+# Load pretrained image checker
+@st.cache_resource
+def load_image_checker():
+    return tf.keras.applications.MobileNetV2(
+        weights="imagenet"
+    )
+
+st.write("Loading brain tumor model...")
+model = load_brain_model()
+image_checker = load_image_checker()
 
 # Project Header
 st.title("🧠 AI-BASED BRAIN TUMOR DETECTION")
@@ -31,13 +47,10 @@ st.markdown("""
 **College:** SKNCOE
 """)
 
-
-
 st.divider()
 
 # Project Overview
 st.write("### 🔬 Project Overview")
-
 st.write(
     "This application uses a Convolutional Neural Network (CNN) "
     "to classify brain MRI images into two categories: "
@@ -54,15 +67,6 @@ uploaded_file = st.file_uploader(
     type=["jpg", "jpeg", "png"]
 )
 
-
-
-@st.cache_resource
-def load_image_checker():
-    return tf.keras.applications.MobileNetV2(weights="imagenet")
-
-image_checker = load_image_checker()
-
-# Prediction
 if uploaded_file is not None:
     try:
         image = Image.open(uploaded_file).convert("RGB")
@@ -72,44 +76,64 @@ if uploaded_file is not None:
 
     st.image(image, caption="Uploaded Image", width="stretch")
 
-    # Check whether the image looks like a common everyday object
+    # Preprocess image for MobileNetV2
     checker_image = image.resize((224, 224))
     checker_array = tf.keras.utils.img_to_array(checker_image)
     checker_array = np.expand_dims(checker_array, axis=0)
     checker_array = tf.keras.applications.mobilenet_v2.preprocess_input(
-        checker_array.copy()
+        checker_array
     )
 
-    checker_prediction = image_checker.predict(checker_array, verbose=0)
+    # Predict common ImageNet labels
+    checker_prediction = image_checker.predict(
+        checker_array,
+        verbose=0
+    )
+
     labels = tf.keras.applications.mobilenet_v2.decode_predictions(
-        checker_prediction, top=5
+        checker_prediction,
+        top=5
     )[0]
 
+    # Common non-MRI object labels
     everyday_objects = {
-        "dog", "cat", "bird", "car", "truck", "bus", "bicycle",
-        "motorcycle", "airplane", "boat", "person", "banana",
-        "apple", "orange", "flower", "guitar", "keyboard",
-        "laptop", "desktop_computer", "cellular_telephone",
-        "coffee_mug", "chair", "sofa", "television", "remote_control"
+        "dog", "cat", "bird", "car", "truck", "trailer_truck",
+        "sports_car", "racer", "bus", "bicycle", "motorcycle",
+        "airplane", "boat", "person", "banana", "apple", "orange",
+        "flower", "guitar", "keyboard", "laptop", "desktop_computer",
+        "cellular_telephone", "coffee_mug", "chair", "sofa",
+        "television", "remote_control", "pick", "gasmask"
     }
 
+    # Heuristic only: reject if a listed object has sufficient score
     obvious_object = any(
-        label[1] in everyday_objects and label[2] >= 0.50
+        label[1] in everyday_objects and float(label[2]) >= 0.03
         for label in labels
     )
 
-    st.write("Checker labels:", [(label[1], round(float(label[2]), 3)) for label in labels])
+    # Temporary debugging output
+    with st.expander("Checker details"):
+        st.write([
+            (label[1], round(float(label[2]), 3))
+            for label in labels
+        ])
+
     if obvious_object:
-      st.error("❌ Invalid Image: Please upload a brain MRI image.")
-      st.stop()
-        
-        
+        st.error(
+            "❌ Invalid Image: Please upload a brain MRI image."
+        )
+        st.stop()
 
-    # Existing brain tumor CNN prediction
+    # Existing CNN prediction — input remains 128x128 RGB, 0–255
     image_resized = image.resize((128, 128))
-    image_array = np.expand_dims(np.array(image_resized), axis=0)
+    image_array = np.expand_dims(
+        np.array(image_resized),
+        axis=0
+    )
 
-    prediction = model.predict(image_array, verbose=0)[0][0]
+    prediction = float(
+        model.predict(image_array, verbose=0)[0][0]
+    )
 
     st.divider()
     st.write("### 🧠 Classification Result")
@@ -121,11 +145,8 @@ if uploaded_file is not None:
         st.success("🟢 Normal Brain (No Tumor)")
         st.write(f"Model Confidence: {(1 - prediction) * 100:.2f}%")
 
-
-
 # Disclaimer
 st.divider()
-
 st.info(
     "⚠️ This application is an educational/research prototype "
     "and is not intended for medical diagnosis."

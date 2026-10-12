@@ -103,6 +103,7 @@ if uploaded_file is not None:
         st.stop()
         st.write("Checker labels:", [(label[1], round(float(label[2]), 3)) for label in labels])
         
+        
 
     # Existing brain tumor CNN prediction
     image_resized = image.resize((128, 128))

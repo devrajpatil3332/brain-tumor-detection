@@ -56,7 +56,12 @@ uploaded_file = st.file_uploader(
 
 
 
-# Prediction
+@st.cache_resource
+def load_image_checker():
+    return tf.keras.applications.MobileNetV2(weights="imagenet")
+
+image_checker = load_image_checker()
+
 # Prediction
 if uploaded_file is not None:
     try:
@@ -67,6 +72,37 @@ if uploaded_file is not None:
 
     st.image(image, caption="Uploaded Image", width="stretch")
 
+    # Check whether the image looks like a common everyday object
+    checker_image = image.resize((224, 224))
+    checker_array = tf.keras.utils.img_to_array(checker_image)
+    checker_array = np.expand_dims(checker_array, axis=0)
+    checker_array = tf.keras.applications.mobilenet_v2.preprocess_input(
+        checker_array.copy()
+    )
+
+    checker_prediction = image_checker.predict(checker_array, verbose=0)
+    labels = tf.keras.applications.mobilenet_v2.decode_predictions(
+        checker_prediction, top=5
+    )[0]
+
+    everyday_objects = {
+        "dog", "cat", "bird", "car", "truck", "bus", "bicycle",
+        "motorcycle", "airplane", "boat", "person", "banana",
+        "apple", "orange", "flower", "guitar", "keyboard",
+        "laptop", "desktop_computer", "cellular_telephone",
+        "coffee_mug", "chair", "sofa", "television", "remote_control"
+    }
+
+    obvious_object = any(
+        label[1] in everyday_objects and label[2] >= 0.50
+        for label in labels
+    )
+
+    if obvious_object:
+        st.error("❌ Invalid Image: Please upload a brain MRI image.")
+        st.stop()
+
+    # Existing brain tumor CNN prediction
     image_resized = image.resize((128, 128))
     image_array = np.expand_dims(np.array(image_resized), axis=0)
 
@@ -81,6 +117,7 @@ if uploaded_file is not None:
     else:
         st.success("🟢 Normal Brain (No Tumor)")
         st.write(f"Model Confidence: {(1 - prediction) * 100:.2f}%")
+
 
 
 # Disclaimer

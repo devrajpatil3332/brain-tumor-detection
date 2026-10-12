@@ -1,10 +1,11 @@
 
+
 import streamlit as st
 import tensorflow as tf
 from PIL import Image
 import numpy as np
 
-# Page settings — must be first Streamlit command
+# Page settings
 st.set_page_config(
     page_title="Brain Tumor Detection",
     page_icon="🧠",
@@ -26,11 +27,6 @@ def load_image_checker():
         weights="imagenet"
     )
 
-st.write("Loading brain tumor model...")
-model = load_brain_model()
-image_checker = load_image_checker()
-
-# Project Header
 st.title("🧠 AI-BASED BRAIN TUMOR DETECTION")
 st.subheader("MRI Image Classification using CNN")
 
@@ -67,6 +63,7 @@ uploaded_file = st.file_uploader(
     type=["jpg", "jpeg", "png"]
 )
 
+# Prediction
 if uploaded_file is not None:
     try:
         image = Image.open(uploaded_file).convert("RGB")
@@ -76,7 +73,7 @@ if uploaded_file is not None:
 
     st.image(image, caption="Uploaded Image", width="stretch")
 
-    # Preprocess image for MobileNetV2
+    # Preprocess for MobileNetV2 checker
     checker_image = image.resize((224, 224))
     checker_array = tf.keras.utils.img_to_array(checker_image)
     checker_array = np.expand_dims(checker_array, axis=0)
@@ -84,8 +81,7 @@ if uploaded_file is not None:
         checker_array
     )
 
-    # Predict common ImageNet labels
-    checker_prediction = image_checker.predict(
+    checker_prediction = image_checker = load_image_checker().predict(
         checker_array,
         verbose=0
     )
@@ -95,7 +91,7 @@ if uploaded_file is not None:
         top=5
     )[0]
 
-    # Common non-MRI object labels
+    # Common everyday object labels
     everyday_objects = {
         "dog", "cat", "bird", "car", "truck", "trailer_truck",
         "sports_car", "racer", "bus", "bicycle", "motorcycle",
@@ -105,26 +101,17 @@ if uploaded_file is not None:
         "television", "remote_control", "pick", "gasmask"
     }
 
-    # Heuristic only: reject if a listed object has sufficient score
+    # Basic heuristic to reject common objects
     obvious_object = any(
         label[1] in everyday_objects and float(label[2]) >= 0.03
         for label in labels
     )
 
-    # Temporary debugging output
-    with st.expander("Checker details"):
-        st.write([
-            (label[1], round(float(label[2]), 3))
-            for label in labels
-        ])
-
     if obvious_object:
-        st.error(
-            "❌ Invalid Image: Please upload a brain MRI image."
-        )
+        st.error("❌ Invalid Image: Please upload a brain MRI image.")
         st.stop()
 
-    # Existing CNN prediction — input remains 128x128 RGB, 0–255
+    # CNN prediction: original input format retained (128x128 RGB, 0–255)
     image_resized = image.resize((128, 128))
     image_array = np.expand_dims(
         np.array(image_resized),
@@ -132,7 +119,7 @@ if uploaded_file is not None:
     )
 
     prediction = float(
-        model.predict(image_array, verbose=0)[0][0]
+        load_brain_model().predict(image_array, verbose=0)[0][0]
     )
 
     st.divider()

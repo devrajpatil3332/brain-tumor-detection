@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import tensorflow as tf
 import numpy as np
@@ -208,4 +207,3 @@ st.info(
     "and is not intended for medical diagnosis. "
     "The image checker may fail to identify some non-MRI images."
 )
-```

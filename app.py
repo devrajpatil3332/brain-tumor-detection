@@ -87,72 +87,65 @@ def predict_image(model, image_array):
     if result.size != 1:
         raise ValueError(
             f"Expected one binary output, received shape {result.shape}. "
-            "This app currently supports a binary classifier."
+            "This app supports a binary classifier."
         )
 
     return float(result.reshape(-1)[0])
 
 
-# ---------------- GRAD-CAM ----------------
-def get_last_conv_layer(model):
-    """Find a directly accessible Conv2D layer."""
-    conv_layers = [
-        layer for layer in model.layers
-        if isinstance(layer, tf.keras.layers.Conv2D)
-    ]
-
-    if conv_layers:
-        return conv_layers[-1]
-
-    # Some models wrap the CNN inside a nested model.
-    # Inspect nested layers, but report failure if the graph
-    # does not expose the intermediate output correctly.
+# ---------------- FIND CONV LAYER ----------------
+def find_conv_layer(model):
     for layer in reversed(model.layers):
-        if isinstance(layer, tf.keras.Model):
-            nested_convs = [
-                sublayer for sublayer in layer.layers
-                if isinstance(sublayer, tf.keras.layers.Conv2D)
-            ]
-            if nested_convs:
-                return nested_convs[-1]
-
+        if isinstance(layer, tf.keras.layers.Conv2D):
+            return layer
     return None
 
 
+# ---------------- GRAD-CAM ----------------
 def make_gradcam(model, image_array):
     try:
-        conv_layer = get_last_conv_layer(model)
-
-        if conv_layer is None:
-            return None, (
-                "No accessible convolutional layer was found. "
-                "The model architecture must be checked."
-            )
-
-        grad_model = tf.keras.Model(
-            inputs=model.inputs,
-            outputs=[conv_layer.output, model.output]
-        )
-
         image_tensor = tf.convert_to_tensor(
             image_array, dtype=tf.float32
         )
 
+        # Build the model by passing a real input.
+        _ = model(image_tensor, training=False)
+
+        conv_layer = find_conv_layer(model)
+
+        if conv_layer is None:
+            return None, (
+                "No directly accessible Conv2D layer was found. "
+                "This model may use a nested architecture."
+            )
+
+        # Build a probe model from the input to the selected layer.
+        # This approach works for a simple Sequential/Functional CNN.
+        feature_model = tf.keras.Model(
+            inputs=model.inputs,
+            outputs=conv_layer.output
+        )
+
         with tf.GradientTape() as tape:
-            conv_features, output = grad_model(
+            conv_features = feature_model(
                 image_tensor, training=False
             )
-            output = tf.convert_to_tensor(output)
-            score = (
-                output[:, 0]
-                if len(output.shape) > 1
-                else output
-            )
+            tape.watch(conv_features)
+
+            # Evaluate the original model output separately.
+            prediction = model(image_tensor, training=False)
+            if isinstance(prediction, (list, tuple)):
+                prediction = prediction[0]
+
+            score = tf.reshape(prediction, (-1,))[0]
 
         gradients = tape.gradient(score, conv_features)
 
         if gradients is None:
-            return None, "Grad-CAM gradients were unavailable."
+            return None, (
+                "Gradients are not connected to this layer. "
+                "The model graph needs architecture-specific Grad-CAM."
+            )
 
         weights = tf.reduce_mean(
             gradients, axis=(1, 2), keepdims=True
@@ -171,11 +164,11 @@ def make_gradcam(model, image_array):
 
     except Exception as error:
         return None, (
-            "Grad-CAM could not be generated for this model. "
-            f"Details: {type(error).__name__}: {error}"
+            f"Grad-CAM failed: {type(error).__name__}: {error}"
         )
 
 
+# ---------------- CREATE OVERLAY ----------------
 def make_overlay(image, heatmap):
     original = np.asarray(
         image.resize(IMAGE_SIZE).convert("RGB")
@@ -249,6 +242,7 @@ def create_pdf(filename, label, raw_output, timestamp, overlay=None):
     table = Table(
         rows, colWidths=[48 * mm, 112 * mm]
     )
+
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1),
          colors.HexColor("#eaf1f8")),
@@ -277,13 +271,11 @@ def create_pdf(filename, label, raw_output, timestamp, overlay=None):
 
     story.append(Spacer(1, 12))
     story.append(Paragraph(
-        "The raw model output is not a clinically calibrated "
-        "probability. This report assumes output >= 0.5 means "
-        "the tumor class and output < 0.5 means the normal class. "
-        "Verify this mapping against the original training labels. "
-        "Grad-CAM highlights model activation and does not confirm "
-        "tumor presence or location. Do not use this report for "
-        "medical decisions.",
+        "The raw model output is not a clinically calibrated probability. "
+        "This report assumes output >= 0.5 means tumor class and output < "
+        "0.5 means normal class. Verify the mapping against original "
+        "training labels. Grad-CAM does not confirm tumor presence or "
+        "location. Do not use this report for medical decisions.",
         styles["BodyText"]
     ))
 
@@ -333,7 +325,7 @@ if page == "Dashboard":
         st.markdown("""
         <div class="info-card">
             <h3>🔥 Grad-CAM</h3>
-            <p>Visual model explanation</p>
+            <p>Visual model explanation when supported</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -350,7 +342,7 @@ if page == "Dashboard":
         "Upload an MRI image to view the existing model output "
         "and, when supported, a Grad-CAM visualization."
     )
-    st.info("Select **MRI Analysis** in the left sidebar to begin.")
+    st.info("Select MRI Analysis in the left sidebar to begin.")
 
 
 # ---------------- MRI ANALYSIS ----------------
@@ -398,7 +390,6 @@ elif page == "MRI Analysis":
                 st.exception(error)
                 st.stop()
 
-        # Assumes the original binary model uses this mapping.
         label = (
             "Tumor class"
             if raw_output >= 0.5
@@ -415,9 +406,9 @@ elif page == "MRI Analysis":
 
             st.metric("Raw model output", f"{raw_output:.6f}")
             st.caption(
-                "This is a raw model output, not a clinically "
-                "calibrated probability. Verify the class mapping "
-                "against the original training labels."
+                "This is a raw model output, not a clinically calibrated "
+                "probability. Verify the class mapping against the "
+                "original training labels."
             )
 
         st.divider()
@@ -461,8 +452,8 @@ elif page == "MRI Analysis":
         else:
             st.warning(cam_error)
             st.caption(
-                "The model prediction is available, but Grad-CAM "
-                "requires a compatible, accessible convolutional layer."
+                "The prediction is available, but Grad-CAM requires "
+                "a compatible, accessible convolutional layer."
             )
 
         st.divider()
@@ -470,7 +461,7 @@ elif page == "MRI Analysis":
 
         if not REPORTLAB_AVAILABLE:
             st.error(
-                "ReportLab is missing. Add 'reportlab' to "
+                "ReportLab is missing. Add reportlab to "
                 "requirements.txt and redeploy."
             )
         else:
@@ -513,7 +504,7 @@ else:
     st.markdown("""
     - Classify MRI images using the existing trained CNN.
     - Display the binary model output.
-    - Attempt Grad-CAM visualization when the architecture supports it.
+    - Attempt Grad-CAM visualization when supported.
     - Export a PDF report for educational demonstration.
     """)
 

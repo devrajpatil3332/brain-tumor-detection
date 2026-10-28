@@ -214,48 +214,28 @@ def find_last_conv_layer(model):
 # GRAD-CAM
 # --------------------------------------------------
 
-def make_gradcam(model, image_array):
-    """
-    Grad-CAM sathi feature maps ani prediction
-    ekach differentiable forward pass madhun ghenyacha prayatna.
 
-    Nested CNN architecture madhye nested layer cha output
-    outer model graph shi connect nasel tar diagnostic error
-    return kela jail.
-    """
+def make_gradcam(model, image_array):
     try:
         image_tensor = tf.convert_to_tensor(
             image_array,
             dtype=tf.float32
         )
 
-        # Model initialize kara
+        # Build the model first
         _ = model(image_tensor, training=False)
 
-        conv_layer = find_last_conv_layer(model)
+        # Screenshot madhil second Conv2D layer
+        conv_layer = model.get_layer("conv2d_1")
 
-        if conv_layer is None:
-            return None, (
-                "Model madhye Conv2D layer sapadli nahi. "
-                "Model architecture check kara."
-            )
-
-        # Layer output outer model graph madhye available aahe ka?
-        try:
-            grad_model = tf.keras.Model(
-                inputs=model.inputs,
-                outputs=[
-                    conv_layer.output,
-                    model.outputs[0]
-                ]
-            )
-        except Exception as error:
-            return None, (
-                "Conv layer outer model graph shi connect nahi. "
-                "Nested model architecture-specific Grad-CAM "
-                "lagel. Details: "
-                + str(error)
-            )
+        # Feature maps and prediction must share the same graph
+        grad_model = tf.keras.Model(
+            inputs=model.inputs,
+            outputs=[
+                conv_layer.output,
+                model.outputs[0]
+            ]
+        )
 
         with tf.GradientTape() as tape:
             conv_features, predictions = grad_model(
@@ -263,8 +243,8 @@ def make_gradcam(model, image_array):
                 training=False
             )
 
-            # Binary single-output model cha score
-            score = tf.reshape(predictions, (-1,))[0]
+            # Binary classifier: one output neuron
+            score = predictions[:, 0]
 
         gradients = tape.gradient(
             score,
@@ -273,26 +253,24 @@ def make_gradcam(model, image_array):
 
         if gradients is None:
             return None, (
-                "Gradients are not connected to this layer. "
-                "Model graph architecture-specific aahe. "
-                "Khali Model Diagnostics madhye architecture "
-                "summary check kara."
+                "Gradient None aahe. Model input/output graph "
+                "punha verify karava lagel."
             )
 
-        # Spatial average of gradients
+        # Average gradients across spatial dimensions
         weights = tf.reduce_mean(
             gradients,
             axis=(1, 2),
             keepdims=True
         )
 
-        # Weighted combination of feature maps
+        # Weighted sum of convolution feature maps
         heatmap = tf.reduce_sum(
             conv_features * weights,
             axis=-1
         )[0]
 
-        # Positive activations only
+        # Keep positive activations
         heatmap = tf.maximum(heatmap, 0)
 
         max_value = tf.reduce_max(heatmap)
@@ -305,25 +283,20 @@ def make_gradcam(model, image_array):
         heatmap = heatmap.numpy()
 
         if not np.isfinite(heatmap).all():
-            return None, "Grad-CAM heatmap madhye invalid values aahet."
+            return None, "Heatmap madhye invalid values aahet."
 
-        if float(np.max(heatmap)) <= 0:
+        if np.max(heatmap) <= 0:
             return None, (
-                "Heatmap blank aahe. Model output ani "
-                "selected convolution layer check kara."
+                "Heatmap blank aahe. Dusri Conv2D layer "
+                "test karavi lagel."
             )
 
         return heatmap, None
 
     except Exception as error:
         return None, (
-            f"Grad-CAM failed: {type(error).__name__}: {error}"
+            f"Grad-CAM error: {type(error).__name__}: {error}"
         )
-
-
-# --------------------------------------------------
-# GRAD-CAM OVERLAY
-# --------------------------------------------------
 
 def make_overlay(original_image, heatmap):
     try:

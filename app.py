@@ -1,6 +1,6 @@
 
 import os
-from io import BytesIO
+from io import BytesIO, StringIO
 from datetime import datetime
 
 import cv2
@@ -11,156 +11,309 @@ from PIL import Image
 
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table,
-        TableStyle, Image as PDFImage
-    )
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
 
-# ---------------- PAGE CONFIG ----------------
+# --------------------------------------------------
+# APP CONFIGURATION
+# --------------------------------------------------
+
 st.set_page_config(
-    page_title="NeuroVision AI",
+    page_title="Brain Tumor AI Analyzer",
     page_icon="🧠",
     layout="wide"
 )
-
-st.markdown("""
-<style>
-.stApp {
-    background: linear-gradient(135deg,#0b1220,#14243a);
-    color: #f4f7fb;
-}
-[data-testid="stSidebar"] {
-    background: #091321;
-}
-.hero {
-    padding: 28px;
-    border-radius: 18px;
-    background: linear-gradient(110deg,#18365f,#176174);
-    border: 1px solid #31506d;
-    margin-bottom: 22px;
-}
-.hero h1 { color: white; }
-.hero p { color: #d7e9f7; font-size: 17px; }
-.info-card {
-    background: #17253a;
-    border: 1px solid #2a405c;
-    border-radius: 14px;
-    padding: 20px;
-    min-height: 115px;
-}
-</style>
-""", unsafe_allow_html=True)
-
 
 MODEL_PATH = "brain_tumor_cnn.h5"
 IMAGE_SIZE = (128, 128)
 
 
-# ---------------- LOAD MODEL ----------------
+# --------------------------------------------------
+# CUSTOM CSS
+# --------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #f6f8fc;
+    }
+
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+
+    .hero {
+        padding: 28px;
+        border-radius: 18px;
+        background: linear-gradient(120deg, #132743, #1d5c83);
+        color: white;
+        margin-bottom: 22px;
+    }
+
+    .hero h1 {
+        color: white;
+        margin-bottom: 8px;
+    }
+
+    .small-note {
+        color: #64748b;
+        font-size: 14px;
+    }
+
+    div[data-testid="stMetric"] {
+        background: white;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# --------------------------------------------------
+# LOAD MODEL
+# --------------------------------------------------
+
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"{MODEL_PATH} was not found in the repository."
+            f"Model file '{MODEL_PATH}' sapadla nahi."
         )
-    return tf.keras.models.load_model(
-        MODEL_PATH, compile=False
+
+    loaded_model = tf.keras.models.load_model(
+        MODEL_PATH,
+        compile=False
     )
 
+    # Model initialize kara
+    dummy_input = tf.zeros(
+        (1, IMAGE_SIZE[0], IMAGE_SIZE[1], 3),
+        dtype=tf.float32
+    )
 
-# ---------------- PREDICTION ----------------
+    loaded_model(dummy_input, training=False)
+
+    return loaded_model
+
+
+# --------------------------------------------------
+# MODEL ARCHITECTURE DIAGNOSTICS
+# --------------------------------------------------
+
+def get_model_summary(model):
+    stream = StringIO()
+    model.summary(print_fn=lambda line: stream.write(line + "\n"))
+    return stream.getvalue()
+
+
+def describe_layers(model):
+    details = []
+
+    for index, layer in enumerate(model.layers):
+        try:
+            output_shape = str(layer.output.shape)
+        except Exception:
+            output_shape = "Unavailable"
+
+        details.append({
+            "Index": index,
+            "Layer": layer.name,
+            "Type": layer.__class__.__name__,
+            "Output shape": output_shape
+        })
+
+    return details
+
+
+# --------------------------------------------------
+# IMAGE PREPROCESSING
+# --------------------------------------------------
+
+def preprocess_image(pil_image):
+    image = pil_image.convert("RGB")
+    image = image.resize(IMAGE_SIZE)
+
+    image_array = np.asarray(
+        image,
+        dtype=np.float32
+    )
+
+    # Training madhye normalization vaparla asel tar
+    # ithe tech normalization vaprane avashyak aahe.
+    return np.expand_dims(image_array, axis=0)
+
+
+# --------------------------------------------------
+# PREDICTION
+# --------------------------------------------------
+
 def predict_image(model, image_array):
-    result = model.predict(image_array, verbose=0)
+    prediction = model.predict(
+        image_array,
+        verbose=0
+    )
 
-    if isinstance(result, (list, tuple)):
-        result = result[0]
+    prediction = np.asarray(prediction)
 
-    result = np.asarray(result)
-
-    if result.size != 1:
+    if prediction.size != 1:
         raise ValueError(
-            f"Expected one binary output, received shape {result.shape}. "
-            "This app supports a binary classifier."
+            "Ha app single-output binary classification model "
+            "expect karto. Model output shape: "
+            + str(prediction.shape)
         )
 
-    return float(result.reshape(-1)[0])
+    score = float(prediction.reshape(-1)[0])
+
+    if not np.isfinite(score):
+        raise ValueError("Model ne valid prediction dili nahi.")
+
+    # IMPORTANT:
+    # He mapping model training labels var avalambun aahe.
+    # Training madhye 1 = Tumor asel tarach hi mapping barobar aahe.
+    if score >= 0.5:
+        label = "Tumor"
+        confidence = score * 100
+    else:
+        label = "Normal"
+        confidence = (1.0 - score) * 100
+
+    return label, confidence, score
 
 
-# ---------------- FIND CONV LAYER ----------------
-def find_conv_layer(model):
+# --------------------------------------------------
+# FIND LAST CONVOLUTION LAYER
+# --------------------------------------------------
+
+def find_last_conv_layer(model):
+    """
+    Direct Conv2D layer shodhto.
+    Nested models madhye asel tar tyanchyat suddha shodhto.
+    """
     for layer in reversed(model.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
             return layer
+
+        if isinstance(layer, tf.keras.Model):
+            nested_layer = find_last_conv_layer(layer)
+            if nested_layer is not None:
+                return nested_layer
+
     return None
 
 
-# ---------------- GRAD-CAM ----------------
+# --------------------------------------------------
+# GRAD-CAM
+# --------------------------------------------------
+
 def make_gradcam(model, image_array):
+    """
+    Grad-CAM sathi feature maps ani prediction
+    ekach differentiable forward pass madhun ghenyacha prayatna.
+
+    Nested CNN architecture madhye nested layer cha output
+    outer model graph shi connect nasel tar diagnostic error
+    return kela jail.
+    """
     try:
         image_tensor = tf.convert_to_tensor(
-            image_array, dtype=tf.float32
+            image_array,
+            dtype=tf.float32
         )
 
-        # Build the model by passing a real input.
+        # Model initialize kara
         _ = model(image_tensor, training=False)
 
-        conv_layer = find_conv_layer(model)
+        conv_layer = find_last_conv_layer(model)
 
         if conv_layer is None:
             return None, (
-                "No directly accessible Conv2D layer was found. "
-                "This model may use a nested architecture."
+                "Model madhye Conv2D layer sapadli nahi. "
+                "Model architecture check kara."
             )
 
-        # Build a probe model from the input to the selected layer.
-        # This approach works for a simple Sequential/Functional CNN.
-        feature_model = tf.keras.Model(
-            inputs=model.inputs,
-            outputs=conv_layer.output
-        )
+        # Layer output outer model graph madhye available aahe ka?
+        try:
+            grad_model = tf.keras.Model(
+                inputs=model.inputs,
+                outputs=[
+                    conv_layer.output,
+                    model.outputs[0]
+                ]
+            )
+        except Exception as error:
+            return None, (
+                "Conv layer outer model graph shi connect nahi. "
+                "Nested model architecture-specific Grad-CAM "
+                "lagel. Details: "
+                + str(error)
+            )
 
         with tf.GradientTape() as tape:
-            conv_features = feature_model(
-                image_tensor, training=False
+            conv_features, predictions = grad_model(
+                image_tensor,
+                training=False
             )
-            tape.watch(conv_features)
 
-            # Evaluate the original model output separately.
-            prediction = model(image_tensor, training=False)
-            if isinstance(prediction, (list, tuple)):
-                prediction = prediction[0]
+            # Binary single-output model cha score
+            score = tf.reshape(predictions, (-1,))[0]
 
-            score = tf.reshape(prediction, (-1,))[0]
-
-        gradients = tape.gradient(score, conv_features)
+        gradients = tape.gradient(
+            score,
+            conv_features
+        )
 
         if gradients is None:
             return None, (
                 "Gradients are not connected to this layer. "
-                "The model graph needs architecture-specific Grad-CAM."
+                "Model graph architecture-specific aahe. "
+                "Khali Model Diagnostics madhye architecture "
+                "summary check kara."
             )
 
+        # Spatial average of gradients
         weights = tf.reduce_mean(
-            gradients, axis=(1, 2), keepdims=True
+            gradients,
+            axis=(1, 2),
+            keepdims=True
         )
 
+        # Weighted combination of feature maps
         heatmap = tf.reduce_sum(
-            conv_features * weights, axis=-1
+            conv_features * weights,
+            axis=-1
         )[0]
 
+        # Positive activations only
         heatmap = tf.maximum(heatmap, 0)
+
+        max_value = tf.reduce_max(heatmap)
+
         heatmap = tf.math.divide_no_nan(
-            heatmap, tf.reduce_max(heatmap)
+            heatmap,
+            max_value
         )
 
-        return heatmap.numpy(), None
+        heatmap = heatmap.numpy()
+
+        if not np.isfinite(heatmap).all():
+            return None, "Grad-CAM heatmap madhye invalid values aahet."
+
+        if float(np.max(heatmap)) <= 0:
+            return None, (
+                "Heatmap blank aahe. Model output ani "
+                "selected convolution layer check kara."
+            )
+
+        return heatmap, None
 
     except Exception as error:
         return None, (
@@ -168,357 +321,461 @@ def make_gradcam(model, image_array):
         )
 
 
-# ---------------- CREATE OVERLAY ----------------
-def make_overlay(image, heatmap):
-    original = np.asarray(
-        image.resize(IMAGE_SIZE).convert("RGB")
-    )
+# --------------------------------------------------
+# GRAD-CAM OVERLAY
+# --------------------------------------------------
 
-    heatmap = cv2.resize(
-        heatmap.astype(np.float32), IMAGE_SIZE
-    )
-    heatmap = heatmap / (np.max(heatmap) + 1e-8)
+def make_overlay(original_image, heatmap):
+    try:
+        original = original_image.convert("RGB")
+        original_array = np.asarray(original)
 
-    colored = cv2.applyColorMap(
-        np.uint8(255 * heatmap), cv2.COLORMAP_JET
-    )
-    colored = cv2.cvtColor(
-        colored, cv2.COLOR_BGR2RGB
-    )
+        resized_heatmap = cv2.resize(
+            heatmap,
+            (original_array.shape[1], original_array.shape[0])
+        )
 
-    overlay = cv2.addWeighted(
-        original, 0.60, colored, 0.40, 0
-    )
+        heatmap_uint8 = np.uint8(
+            255 * np.clip(resized_heatmap, 0, 1)
+        )
 
-    return original, overlay
+        colored_heatmap = cv2.applyColorMap(
+            heatmap_uint8,
+            cv2.COLORMAP_JET
+        )
+
+        colored_heatmap = cv2.cvtColor(
+            colored_heatmap,
+            cv2.COLOR_BGR2RGB
+        )
+
+        overlay = cv2.addWeighted(
+            original_array,
+            0.60,
+            colored_heatmap,
+            0.40,
+            0
+        )
+
+        return Image.fromarray(overlay)
+
+    except Exception:
+        return None
 
 
-# ---------------- PDF REPORT ----------------
-def create_pdf(filename, label, raw_output, timestamp, overlay=None):
+# --------------------------------------------------
+# PDF REPORT
+# --------------------------------------------------
+
+def create_pdf_report(
+    label,
+    confidence,
+    raw_score,
+    uploaded_filename
+):
     if not REPORTLAB_AVAILABLE:
         return None
 
     buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
 
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm
+    page_width, page_height = A4
+
+    pdf.setTitle("Brain MRI AI Analysis Report")
+
+    pdf.setFont("Helvetica-Bold", 19)
+    pdf.drawString(
+        50,
+        page_height - 60,
+        "Brain MRI AI Analysis Report"
     )
 
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="ReportHeading",
-        parent=styles["Title"],
-        textColor=colors.HexColor("#15385b"),
-        fontSize=19
-    ))
+    pdf.setFont("Helvetica", 11)
 
-    story = [
-        Paragraph(
-            "NeuroVision AI - Brain MRI Report",
-            styles["ReportHeading"]
-        ),
-        Spacer(1, 12),
-        Paragraph(
-            "Educational research prototype only. "
-            "Not a clinical diagnosis.",
-            styles["Normal"]
-        ),
-        Spacer(1, 15)
+    y = page_height - 110
+
+    report_lines = [
+        f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Uploaded image: {uploaded_filename}",
+        "",
+        f"Model output category: {label}",
+        f"Displayed model confidence: {confidence:.2f}%",
+        f"Raw model output: {raw_score:.6f}",
+        "",
+        "Project: Explainable AI-based brain tumor classification",
+        "Method: CNN classification with Grad-CAM visualization",
+        "",
+        "IMPORTANT MEDICAL DISCLAIMER",
+        "This report is generated by an academic AI prototype.",
+        "It is not a medical diagnosis and must not be used",
+        "to make treatment or healthcare decisions.",
+        "A qualified radiologist or medical professional must",
+        "interpret MRI images and confirm any findings."
     ]
 
-    rows = [
-        ["Image filename", str(filename)],
-        ["Analysis time", timestamp],
-        ["Model output label", label],
-        ["Raw model output", f"{raw_output:.6f}"],
-        ["Threshold assumption", "0.5"]
-    ]
+    for line in report_lines:
+        if y < 60:
+            pdf.showPage()
+            y = page_height - 60
+            pdf.setFont("Helvetica", 11)
 
-    table = Table(
-        rows, colWidths=[48 * mm, 112 * mm]
-    )
+        pdf.drawString(50, y, line)
+        y -= 23
 
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1),
-         colors.HexColor("#eaf1f8")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7)
-    ]))
-
-    story.extend([table, Spacer(1, 15)])
-
-    if overlay is not None:
-        image_buffer = BytesIO()
-        Image.fromarray(overlay).save(
-            image_buffer, format="PNG"
-        )
-        image_buffer.seek(0)
-
-        story.append(
-            Paragraph("Grad-CAM visualization", styles["Heading2"])
-        )
-        story.append(PDFImage(
-            image_buffer, width=115 * mm, height=115 * mm
-        ))
-
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(
-        "The raw model output is not a clinically calibrated probability. "
-        "This report assumes output >= 0.5 means tumor class and output < "
-        "0.5 means normal class. Verify the mapping against original "
-        "training labels. Grad-CAM does not confirm tumor presence or "
-        "location. Do not use this report for medical decisions.",
-        styles["BodyText"]
-    ))
-
-    document.build(story)
+    pdf.save()
     buffer.seek(0)
+
     return buffer.getvalue()
 
 
-# ---------------- SIDEBAR ----------------
-with st.sidebar:
-    st.markdown("## 🧠 NeuroVision AI")
-    st.caption("Explainable Brain MRI Research")
+# --------------------------------------------------
+# HEADER
+# --------------------------------------------------
 
-    page = st.radio(
-        "Navigation",
-        ["Dashboard", "MRI Analysis", "About Project"]
-    )
-
-    st.divider()
-    st.warning(
-        "Educational prototype only. "
-        "Not intended for clinical diagnosis."
-    )
-
-
-# ---------------- DASHBOARD ----------------
-if page == "Dashboard":
-    st.markdown("""
+st.markdown(
+    """
     <div class="hero">
-        <h1>🧠 NeuroVision AI</h1>
-        <p>Brain MRI Classification with Explainable AI</p>
-        <p>Deep Learning • CNN • Grad-CAM • Visual Analysis</p>
+        <h1>🧠 Brain Tumor MRI Analyzer</h1>
+        <p>Explainable AI-based brain tumor classification using CNN
+        and Grad-CAM</p>
+        <p>Final-Year ENTC Major Project</p>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True
+)
+
+
+# --------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------
+
+st.sidebar.title("🧠 Navigation")
+
+page = st.sidebar.radio(
+    "Select Page",
+    [
+        "Dashboard",
+        "MRI Analysis",
+        "About Project",
+        "Model Diagnostics"
+    ]
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "Academic prototype only. Not intended for clinical diagnosis."
+)
+
+
+# --------------------------------------------------
+# DASHBOARD
+# --------------------------------------------------
+
+if page == "Dashboard":
+
+    st.subheader("Project Dashboard")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.markdown("""
-        <div class="info-card">
-            <h3>🧠 CNN</h3>
-            <p>Binary MRI classifier</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("AI Model", "CNN")
 
     with col2:
-        st.markdown("""
-        <div class="info-card">
-            <h3>🔥 Grad-CAM</h3>
-            <p>Visual model explanation when supported</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Explainability", "Grad-CAM")
 
     with col3:
-        st.markdown("""
-        <div class="info-card">
-            <h3>📄 PDF Report</h3>
-            <p>Downloadable analysis report</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Input", "MRI Image")
 
-    st.subheader("Project Overview")
+    st.markdown("### Project Overview")
+
     st.write(
-        "Upload an MRI image to view the existing model output "
-        "and, when supported, a Grad-CAM visualization."
+        "This application demonstrates binary classification "
+        "of an uploaded MRI image using a trained CNN model. "
+        "Grad-CAM is used to visualize image regions that influence "
+        "the model's output, when the model architecture supports it."
     )
-    st.info("Select MRI Analysis in the left sidebar to begin.")
+
+    st.info(
+        "Grad-CAM visualization may not be available for every "
+        "saved model architecture. A heatmap is not proof that "
+        "the model has correctly identified a tumor."
+    )
 
 
-# ---------------- MRI ANALYSIS ----------------
+# --------------------------------------------------
+# MRI ANALYSIS
+# --------------------------------------------------
+
 elif page == "MRI Analysis":
-    st.markdown("""
-    <div class="hero">
-        <h1>📊 MRI Analysis</h1>
-        <p>Upload a JPG or PNG brain MRI image.</p>
-    </div>
-    """, unsafe_allow_html=True)
+
+    st.subheader("MRI Image Analysis")
+
+    st.write(
+        "Upload an MRI image to run the trained CNN model."
+    )
 
     uploaded_file = st.file_uploader(
-        "Choose MRI image",
+        "Upload MRI image",
         type=["jpg", "jpeg", "png"]
     )
 
     if uploaded_file is not None:
+
         try:
-            image = Image.open(uploaded_file).convert("RGB")
-        except Exception:
-            st.error("Could not open this image file.")
-            st.stop()
+            original_image = Image.open(uploaded_file).convert("RGB")
 
-        model_input = np.expand_dims(
-            np.asarray(
-                image.resize(IMAGE_SIZE), dtype=np.float32
-            ),
-            axis=0
-        )
+            left, right = st.columns(2)
 
-        col1, col2 = st.columns(2)
+            with left:
+                st.markdown("#### Uploaded MRI")
+                st.image(
+                    original_image,
+                    caption="Uploaded MRI image",
+                    use_container_width=True
+                )
 
-        with col1:
-            st.image(
-                image, caption="Uploaded MRI",
+            with st.spinner("Loading CNN model..."):
+                model = load_model()
+
+            image_array = preprocess_image(original_image)
+
+            with st.spinner("Analyzing image..."):
+                label, confidence, raw_score = predict_image(
+                    model,
+                    image_array
+                )
+
+            with right:
+                st.markdown("#### Classification Result")
+
+                st.metric(
+                    "Predicted Category",
+                    label
+                )
+
+                st.metric(
+                    "Model Score",
+                    f"{confidence:.2f}%"
+                )
+
+                st.caption(
+                    "This percentage is the model's output-derived "
+                    "score, not a clinically validated probability."
+                )
+
+            if label == "Tumor":
+                st.warning(
+                    "The model classified this image as Tumor. "
+                    "This is not a diagnosis; please consult a "
+                    "qualified medical professional."
+                )
+            else:
+                st.success(
+                    "The model classified this image as Normal. "
+                    "This does not rule out disease or replace "
+                    "professional medical review."
+                )
+
+            st.markdown("---")
+            st.subheader("Grad-CAM Explainability")
+
+            with st.spinner("Generating Grad-CAM heatmap..."):
+                heatmap, gradcam_error = make_gradcam(
+                    model,
+                    image_array
+                )
+
+            if heatmap is not None:
+                overlay = make_overlay(
+                    original_image,
+                    heatmap
+                )
+
+                col_a, col_b = st.columns(2)
+
+                with col_a:
+                    st.markdown("#### Grad-CAM Heatmap")
+                    st.image(
+                        heatmap,
+                        caption="Activation intensity",
+                        clamp=True,
+                        use_container_width=True
+                    )
+
+                with col_b:
+                    st.markdown("#### MRI + Heatmap Overlay")
+
+                    if overlay is not None:
+                        st.image(
+                            overlay,
+                            caption="Highlighted model activation regions",
+                            use_container_width=True
+                        )
+                    else:
+                        st.warning(
+                            "Overlay image tayar karta aala nahi."
+                        )
+
+                st.caption(
+                    "Grad-CAM highlights regions associated with the "
+                    "model score. It does not independently confirm "
+                    "a tumor's presence or location."
+                )
+
+            else:
+                st.error("Grad-CAM tayar karta aala nahi.")
+                st.code(gradcam_error or "Unknown Grad-CAM error.")
+
+                st.info(
+                    "Sidebar madhun Model Diagnostics page open kara. "
+                    "Tithe model architecture summary milu shakto."
+                )
+
+            st.markdown("---")
+            st.subheader("Download Report")
+
+            if REPORTLAB_AVAILABLE:
+                pdf_bytes = create_pdf_report(
+                    label,
+                    confidence,
+                    raw_score,
+                    uploaded_file.name
+                )
+
+                if pdf_bytes:
+                    st.download_button(
+                        label="📄 Download PDF Report",
+                        data=pdf_bytes,
+                        file_name="brain_mri_analysis_report.pdf",
+                        mime="application/pdf"
+                    )
+            else:
+                st.warning(
+                    "PDF report sathi requirements.txt madhye "
+                    "'reportlab' add kara."
+                )
+
+        except Exception as error:
+            st.error(
+                f"Analysis madhye error aala: "
+                f"{type(error).__name__}: {error}"
+            )
+
+            st.info(
+                "Model file, input image size ani model output "
+                "format check kara."
+            )
+
+
+# --------------------------------------------------
+# ABOUT PROJECT
+# --------------------------------------------------
+
+elif page == "About Project":
+
+    st.subheader("About the Project")
+
+    st.markdown(
+        """
+        **Project Title:** Explainable AI-Based Brain Tumor
+        Classification from MRI Using CNN and Grad-CAM
+
+        **Objectives**
+        - Classify MRI images using a trained CNN.
+        - Display the model's predicted category.
+        - Generate Grad-CAM visualization where supported.
+        - Provide a downloadable PDF summary.
+
+        **Technologies**
+        - Python
+        - TensorFlow / Keras
+        - Streamlit
+        - OpenCV
+        - NumPy
+        - Matplotlib-compatible heatmap coloring
+        - ReportLab for PDF reports
+
+        **Important limitation**
+
+        The output depends on the model's training data, preprocessing,
+        class-label mapping and architecture. It is an academic
+        demonstration, not a clinically validated diagnostic tool.
+        """
+    )
+
+
+# --------------------------------------------------
+# MODEL DIAGNOSTICS
+# --------------------------------------------------
+
+elif page == "Model Diagnostics":
+
+    st.subheader("CNN Model Diagnostics")
+
+    st.write(
+        "Grad-CAM error solve karayla model architecture samjun "
+        "ghene mahatvache aahe."
+    )
+
+    if st.button("Load Model and Show Architecture"):
+
+        try:
+            with st.spinner("Loading model architecture..."):
+                model = load_model()
+
+            st.success("Model successfully loaded.")
+
+            st.markdown("### Model Summary")
+            st.code(
+                get_model_summary(model),
+                language="text"
+            )
+
+            st.markdown("### Layer Details")
+
+            st.dataframe(
+                describe_layers(model),
                 use_container_width=True
             )
 
-        with st.spinner("Running CNN model..."):
-            try:
-                model = load_model()
-                raw_output = predict_image(model, model_input)
-            except Exception as error:
-                st.error("The model could not be loaded or run.")
-                st.exception(error)
-                st.stop()
+            conv_layer = find_last_conv_layer(model)
 
-        label = (
-            "Tumor class"
-            if raw_output >= 0.5
-            else "Normal class"
-        )
-
-        with col2:
-            st.subheader("Classification Result")
-
-            if raw_output >= 0.5:
-                st.error("🔴 Model output: Tumor class")
+            if conv_layer is not None:
+                st.write(
+                    "Last convolution layer candidate:",
+                    conv_layer.name
+                )
+                st.write(
+                    "Layer type:",
+                    conv_layer.__class__.__name__
+                )
             else:
-                st.success("🟢 Model output: Normal class")
-
-            st.metric("Raw model output", f"{raw_output:.6f}")
-            st.caption(
-                "This is a raw model output, not a clinically calibrated "
-                "probability. Verify the class mapping against the "
-                "original training labels."
-            )
-
-        st.divider()
-        st.subheader("🔥 Grad-CAM Explanation")
-
-        with st.spinner("Attempting Grad-CAM..."):
-            heatmap, cam_error = make_gradcam(
-                model, model_input
-            )
-
-        overlay = None
-
-        if heatmap is not None:
-            original, overlay = make_overlay(image, heatmap)
-
-            cam_col1, cam_col2 = st.columns(2)
-
-            with cam_col1:
-                st.image(
-                    original, caption="MRI input",
-                    use_container_width=True
+                st.warning(
+                    "Conv2D layer sapadli nahi. Grad-CAM sathi "
+                    "model architecture inspect karavi lagel."
                 )
 
-            with cam_col2:
-                st.image(
-                    overlay, caption="Grad-CAM overlay",
-                    use_container_width=True
-                )
+            st.markdown("### Model Input / Output")
 
-            image_buffer = BytesIO()
-            Image.fromarray(overlay).save(
-                image_buffer, format="PNG"
+            st.write("Input shape:", str(model.input_shape))
+            st.write("Output shape:", str(model.output_shape))
+
+            st.warning(
+                "Architecture summary madhye nested models disat "
+                "astil ani gradients disconnected yet astil, tar "
+                "Grad-CAM code la actual model graph nusar adjust "
+                "karava lagel."
             )
 
-            st.download_button(
-                "📥 Download Grad-CAM Image",
-                data=image_buffer.getvalue(),
-                file_name="gradcam_overlay.png",
-                mime="image/png"
-            )
-        else:
-            st.warning(cam_error)
-            st.caption(
-                "The prediction is available, but Grad-CAM requires "
-                "a compatible, accessible convolutional layer."
-            )
-
-        st.divider()
-        st.subheader("📄 Download PDF Report")
-
-        if not REPORTLAB_AVAILABLE:
+        except Exception as error:
             st.error(
-                "ReportLab is missing. Add reportlab to "
-                "requirements.txt and redeploy."
-            )
-        else:
-            pdf_data = create_pdf(
-                uploaded_file.name,
-                label,
-                raw_output,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                overlay
+                f"Model diagnostics failed: "
+                f"{type(error).__name__}: {error}"
             )
 
-            if pdf_data:
-                st.download_button(
-                    "Download PDF Report",
-                    data=pdf_data,
-                    file_name="neurovision_mri_report.pdf",
-                    mime="application/pdf"
-                )
+st.markdown("---")
 
-        st.warning(
-            "Educational prototype only. This output is not a diagnosis. "
-            "Grad-CAM does not prove tumor presence or location. "
-            "Consult a qualified medical professional for health concerns."
-        )
-
-    else:
-        st.info("Upload an MRI image above to start analysis.")
-
-
-# ---------------- ABOUT PROJECT ----------------
-else:
-    st.markdown("""
-    <div class="hero">
-        <h1>ℹ️ About NeuroVision AI</h1>
-        <p>Explainable AI-based Brain MRI Classification</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.subheader("Project Objectives")
-    st.markdown("""
-    - Classify MRI images using the existing trained CNN.
-    - Display the binary model output.
-    - Attempt Grad-CAM visualization when supported.
-    - Export a PDF report for educational demonstration.
-    """)
-
-    st.subheader("Technology Stack")
-    st.write(
-        "Python • Streamlit • TensorFlow/Keras • OpenCV • "
-        "Pillow • ReportLab"
-    )
-
-    st.subheader("Project Team")
-    st.write("Devraj Patil • Pradnya Kantekure • Aditya Patil")
-    st.write("Department: E&TC | College: SKNCOE")
-
-    st.warning(
-        "This is an academic prototype, not a validated medical device. "
-        "Do not use its output for diagnosis or treatment."
-    )
+st.caption(
+    "Educational prototype | CNN + Grad-CAM | "
+    "Not for clinical diagnosis"
+)
